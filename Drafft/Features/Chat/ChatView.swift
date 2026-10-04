@@ -3,17 +3,13 @@ import PhotosUI
 import AVKit
 import UniformTypeIdentifiers
 
-/// Opening a chat on a given session card (from the Sessions tab).
+/// Opening a chat (from the Sessions tab).
 struct ChatRoute: Hashable {
     let chatID: String
-    var sessionID: UUID?
 }
 
 struct ChatView: View {
     let conversationID: String
-    /// Scroll to this session's card and flash it (from the Sessions tab).
-    var focusSession: UUID?
-    @State private var highlighted: String?
     @Environment(AppModel.self) private var app
     @State private var draft = ""
     @State private var viewer: MediaItem?
@@ -21,7 +17,10 @@ struct ChatView: View {
     @State private var proposing = false
     @State private var replyingTo: Message?
     @State private var focused: FocusedMessage?
-    @State private var counterTo: SessionProposal?
+    /// A session, in a sheet over the chat (its card, its banner).
+    @State private var openSession: SessionSheet?
+    /// Every session with this person, pushed over the chat (More menu).
+    @State private var showSessions = false
     /// Where the thread sits: pinned to the latest message until the person scrolls up, then
     /// kept exactly where they left it (back from the background, a photo, a sheet).
     @State private var position = ScrollPosition(edge: .bottom)
@@ -32,13 +31,6 @@ struct ChatView: View {
     @State private var unseen = 0
     @Environment(\.scenePhase) private var scenePhase
     @State private var showSafety = false
-    @State private var safetyFor: SafetyRequest?
-
-    struct SafetyRequest: Identifiable {
-        let id = UUID()
-        let session: SessionProposal
-        let date: Date
-    }
     @Environment(\.dismiss) private var dismissChat
 
     private var convo: Conversation? { app.conversation(conversationID) }
@@ -93,7 +85,7 @@ struct ChatView: View {
     }
 
     private func content(_ convo: Conversation) -> some View {
-        ScrollViewReader { reader in
+        ScrollViewReader { _ in
         ScrollView {
             // Plain VStack: a lazy stack estimated the height of messages not yet laid out, so
             // scrolling up through older ones made the list jump.
@@ -122,14 +114,7 @@ struct ChatView: View {
                         convo: convo,
                         groupedWithNext: next?.fromMe == m.fromMe && (next.map { $0.date.timeIntervalSince(m.date) < 300 } ?? false),
                         onOpen: { viewer = $0 },
-                        onCounterSession: { counterTo = $0 },
-                        onSessionSafety: { s, d in
-                            // After the card has settled into "Confirmed".
-                            Task {
-                                try? await Task.sleep(for: .milliseconds(250))
-                                safetyFor = SafetyRequest(session: s, date: d)
-                            }
-                        },
+                        onOpenSession: { openSession = SessionSheet(id: $0) },
                         onReply: { m in withAnimation(Motion.snappy) { replyingTo = m } },
                         onRetry: { m in app.retry(m.id, in: conversationID) },
                         onFocus: { m, frame in
@@ -137,8 +122,7 @@ struct ChatView: View {
                             t.disablesAnimations = true
                             withTransaction(t) { focused = FocusedMessage(message: m, frame: frame) }
                         },
-                        hidden: focused?.id == m.id,
-                        highlighted: highlighted == m.id
+                        hidden: focused?.id == m.id
                     )
                     .id(m.id)
                     .transition(.asymmetric(
@@ -190,8 +174,6 @@ struct ChatView: View {
             }
             // The ↓ button: only once clearly away from the end (a bit more than a message's
             // height), never at the end itself or on the first pixels of a scroll.
-            let away = new.maxOffset - new.offset > Self.jumpButtonDistance
-            if awayFromEnd != away { awayFromEnd = away }
             if scroll.atBottom && unseen > 0 { unseen = 0 }
         }
         .onScrollTargetVisibilityChange(idType: String.self, threshold: 0.6) { ids in
@@ -199,6 +181,11 @@ struct ChatView: View {
             // place after the background, whatever the keyboard did meanwhile.
             let index = Dictionary(uniqueKeysWithValues: convo.messages.enumerated().map { ($1.id, $0) })
             scroll.lastVisible = ids.max { (index[$0] ?? -1) < (index[$1] ?? -1) }
+            // The ↓ button is for a thread scrolled away from its end: the latest message (or the end marker)
+            // is out of sight. Read from what is on screen, not from offsets that the keyboard and the bars shift.
+            let atEnd = ids.contains(Self.bottomID) || (convo.messages.last.map { ids.contains($0.id) } ?? true)
+            let away = !atEnd && !scroll.stick
+            if awayFromEnd != away { awayFromEnd = away }
         }
         .onScrollPhaseChange { old, new in
             scroll.touching = new == .interacting
@@ -223,7 +210,7 @@ struct ChatView: View {
                     pinToBottom(animated: true)
                 }
                 .padding(.trailing, DS.Space.md)
-                .padding(.bottom, DS.Space.sm)
+                .padding(.bottom, DS.Space.lg)
                 .transition(.scale(scale: 0.6).combined(with: .opacity))
             }
         }
@@ -250,7 +237,12 @@ struct ChatView: View {
         .scrollDismissesKeyboard(.interactively)
         .background(DS.Palette.canvasSoft)
         .toolbarVisibility(.hidden, for: .navigationBar)
-        .topBar { chatBar(convo) }
+        .topBar {
+            VStack(spacing: 0) {
+                chatBar(convo)
+                sessionBanner(convo)
+            }
+        }
         .bottomBar {
             Composer(text: $draft, onSend: { content in
                 scroll.stick = true // your own message always brings you to the end
@@ -272,24 +264,18 @@ struct ChatView: View {
             }
             .sheetSurface()
         }
-        .sheet(item: $counterTo) { original in
-            Group {
-                ProposeSessionSheet(profile: convo.profile, me: app.publicMe, sendTitle: L("Send new times"), counterTo: original) { p in
-                    app.counterSession(original.id, in: conversationID, with: p)
-                }
-            }
-            .sheetSurface()
-        }
-        .sheet(isPresented: $proposing) {
-            Group {
-                ProposeSessionSheet(profile: convo.profile, me: app.publicMe) { p in
-                    app.proposeSession(p, in: conversationID)
-                }
-            }
-            .sheetSurface()
-        }
+        .proposesSession(in: convo, isPresented: $proposing)
         .fullScreenCover(item: $viewer) { MediaViewer(items: MediaItem.gallery(of: convo), start: $0) }
-        .sheet(item: $safetyFor) { r in Group { SessionSafetySheet(session: r.session, date: r.date, partner: convo.profile.name) }.sheetSurface() }
+        // A session slides in over the chat as a sheet; a person's sessions push, Back returns here.
+        .sheet(item: $openSession) { session in
+            Group {
+                NavigationStack { SessionDetailView(sessionID: session.id, presented: true) }
+            }
+            .sheetSurface()
+        }
+        .navigationDestination(isPresented: $showSessions) {
+            PersonSessionsView(chatID: conversationID, name: convo.profile.name)
+        }
         .sheet(isPresented: $showSafety) {
             ReportSheet(profile: convo.profile) { blockFromChat(convo.profile) }
                 .sheetSurface()
@@ -304,14 +290,18 @@ struct ChatView: View {
             }, onDismiss: dismissFocus)
             .presentationBackground(.clear)
         }
-        .task(id: focusSession) { await reveal(convo, with: reader) }
+        .task { await reveal(convo) }
+        .task { await SessionStore.shared.refresh() }
         }
     }
 
-    /// The overflow menu: vertical dots, neutral. Profile and sessions are one tap away in the bar:
-    /// this is about the chat, then safety, apart.
+    /// The overflow menu: vertical dots, neutral. Profile and proposing are one tap away in the bar:
+    /// this is every session with them, the chat itself, then safety, apart.
     private func moreMenu(_ convo: Conversation) -> some View {
         Menu {
+            Section {
+                Button("Sessions with \(convo.profile.name)", image: .icon("stopwatch-play")) { showSessions = true }
+            }
             Section {
                 Button(convo.muted ? "Unmute notifications" : "Mute notifications",
                        image: .icon(convo.muted ? "bell" : "bell-off")) {
@@ -380,17 +370,25 @@ struct ChatView: View {
             .accessibilityLabel("View \(convo.profile.name)'s profile")
             .accessibilityValue(presence(convo))
 
-            // Proposing a session is the chat's main action: a solid accent disc.
+            // Proposing a session is the chat's main action, the only place to start one: a solid accent
+            // disc, the Sessions tab's stopwatch with a small plus.
             Button {
                 Haptics.tap()
                 proposing = true
             } label: {
-                Image("calendar-add")
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(DS.Palette.onLime)
-                    .frame(width: Self.barControl, height: Self.barControl)
-                    .background(DS.Palette.lime, in: .circle)
-                    .contentShape(.circle)
+                HStack(spacing: 6) {
+                    Image("add")
+                        .font(.system(size: 14, weight: .heavy))
+                    Text("Session")
+                        .font(.subheadline.weight(.semibold))
+                }
+                .lineLimit(1)
+                .fixedSize()
+                .foregroundStyle(DS.Palette.onLime)
+                .padding(.horizontal, DS.Space.lg)
+                .frame(height: Self.barControl)
+                .background(DS.Palette.lime, in: .capsule)
+                .contentShape(.capsule)
             }
             .buttonStyle(PressScaleStyle())
             .accessibilityLabel("Propose a session")
@@ -403,10 +401,9 @@ struct ChatView: View {
     }
 
     private static let bottomID = "chat-bottom"
-    /// How far from the end, in points, before the jump-to-latest button shows.
-    private static let jumpButtonDistance: CGFloat = 240
 
     private func pinToBottom(animated: Bool) {
+        if awayFromEnd { awayFromEnd = false }
         if animated {
             withAnimation(Motion.snappy) { position.scrollTo(edge: .bottom) }
         } else {
@@ -433,36 +430,65 @@ struct ChatView: View {
         scroll.saved = nil
     }
 
-    /// Opens on the latest message, or (from Sessions) centres the session card we came for,
-    /// then flashes it once. Only on arrival: coming back from a photo or a cover keeps the place.
-    private func reveal(_ convo: Conversation, with reader: ScrollViewProxy) async {
-        let key = focusSession?.uuidString ?? "bottom"
-        guard scroll.revealed != key else { return }
-        scroll.revealed = key
-        // Normal entry: pinned to the latest message; heights settling (images, composer) keep
-        // it pinned without animation until the thread has settled.
-        guard focusSession != nil else {
-            scroll.stick = true
-            pinToBottom(animated: false)
-            try? await Task.sleep(for: .milliseconds(600))
-            // Once more after images, the composer and the push transition have settled.
-            if scroll.stick { pinToBottom(animated: false) }
-            scroll.settled = true
-            return
-        }
-        scroll.stick = false
+    /// Opens on the latest message. Only on arrival: coming back from a photo or a cover keeps the place.
+    private func reveal(_ convo: Conversation) async {
+        guard scroll.revealed != "bottom" else { return }
+        scroll.revealed = "bottom"
+        // Pinned to the latest message; heights settling (images, composer) keep it pinned without
+        // animation until the thread has settled.
+        scroll.stick = true
+        pinToBottom(animated: false)
+        try? await Task.sleep(for: .milliseconds(600))
+        // Once more after images, the composer and the push transition have settled.
+        if scroll.stick { pinToBottom(animated: false) }
         scroll.settled = true
-        guard let focusSession,
-              let message = convo.messages.first(where: {
-                  if case .session(let s) = $0.content { return s.id == focusSession }
-                  return false
-              }) else { return }
-        try? await Task.sleep(for: .milliseconds(80)) // let the list lay out first
-        reader.scrollTo(message.id, anchor: .center)
-        try? await Task.sleep(for: .milliseconds(250))
-        withAnimation(Motion.snappy) { highlighted = message.id }
-        try? await Task.sleep(for: .seconds(1.4))
-        withAnimation(.easeOut(duration: 0.5)) { highlighted = nil }
+    }
+
+    /// What needs the person in this chat: a session waiting on their answer, or one they sent and wait
+    /// on. A confirmed session is settled and has no banner; the thread holds its card.
+    @ViewBuilder
+    private func sessionBanner(_ convo: Conversation) -> some View {
+        let store = SessionStore.shared
+        if let match = UUID(uuidString: conversationID),
+           let row = store.pending(inMatch: match).first, let session = SessionProposal(row) {
+            SessionBanner(session: session, mine: store.isMine(row)) { openSession = SessionSheet(id: row.id) }
+                .padding(.horizontal, DS.Space.lg)
+                .padding(.bottom, DS.Space.sm)
+                .transition(.opacity)
+        }
+    }
+}
+
+/// The proposal sheet, and once its request has left, "Meet safely" sliding in over the chat.
+private struct ProposesSession: ViewModifier {
+    let convo: Conversation
+    @Binding var isPresented: Bool
+    @Environment(AppModel.self) private var app
+    @State private var sent = false
+    @State private var showMeetSafely = false
+
+    func body(content: Content) -> some View {
+        content
+            .sheet(isPresented: $isPresented, onDismiss: {
+                guard sent else { return }
+                sent = false
+                showMeetSafely = true
+            }, content: {
+                Group {
+                    ProposeSessionSheet(profile: convo.profile, me: app.publicMe) { p in
+                        sent = true
+                        app.proposeSession(p, in: convo.id)
+                    }
+                }
+                .sheetSurface()
+            })
+            .sheet(isPresented: $showMeetSafely) { SessionSafetySheet().sheetSurface() }
+    }
+}
+
+private extension View {
+    func proposesSession(in convo: Conversation, isPresented: Binding<Bool>) -> some View {
+        modifier(ProposesSession(convo: convo, isPresented: isPresented))
     }
 }
 
@@ -483,7 +509,7 @@ private final class ScrollMemo {
     var away = false
     /// A finger is on the thread.
     var touching = false
-    /// What was last revealed on arrival ("bottom" or a session ID).
+    /// Whether the thread already opened on its latest message.
     var revealed: String?
 }
 
@@ -541,10 +567,13 @@ private struct ChatTitle: View {
             VStack(alignment: .leading, spacing: 0) {
                 // No capsule behind: the bar's own blur is the only backdrop, so the text uses the
                 // page's inks (ink, then body at 4.5:1 on sage), not system greys.
+                // A notch smaller than before, on two lines when it needs them, cut only past the second.
                 Text(convo.profile.name)
-                    .font(.headline)
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(DS.Palette.ink)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
                     // design-lint: allow truncation - the chat header name, asked for by the user (DESIGN.md, Headers)
                     .truncationMode(.tail)
                 PresenceLine(convo: convo)
@@ -628,10 +657,8 @@ struct MessageRow: View {
     let convo: Conversation
     let groupedWithNext: Bool
     let onOpen: (MediaItem) -> Void
-    /// Opens the "other times" sheet for an invite.
-    var onCounterSession: (SessionProposal) -> Void = { _ in }
-    /// A session time was confirmed (by you) or the safety tips were asked for from its card.
-    var onSessionSafety: (SessionProposal, Date) -> Void = { _, _ in }
+    /// A session's card tapped: its page opens.
+    var onOpenSession: (UUID) -> Void = { _ in }
     var onReply: (Message) -> Void = { _ in }
     /// A message that couldn't be sent, tapped.
     var onRetry: (Message) -> Void = { _ in }
@@ -641,13 +668,14 @@ struct MessageRow: View {
     var hidden = false
     /// Render only the bubble (the overlay's copy): no swipe, no long press.
     var presentation = false
-    /// The card we came for (from Sessions): a lime ring around the bubble itself, fading out.
-    var highlighted = false
     /// Where the bubble sits on screen, for the long-press lift. A plain reference, not state:
     /// it changes on every frame of a scroll or a push, and as state it re-rendered every row of
     /// the chat each frame (the chat stayed unresponsive for a second or two on arrival).
     @State private var frameBox = FrameBox()
     private final class FrameBox { var rect: CGRect = .zero }
+    /// Until when a card's tap is ignored: a long press or a slide just ended on it. A plain reference.
+    private final class TapGuard { var blockedUntil = Date.distantPast }
+    @State private var tapGuard = TapGuard()
     @Environment(AppModel.self) private var app
     @Environment(\.colorScheme) private var colorScheme
     /// Swipe right to reply, like WhatsApp: the bubble follows, an arrow fills in, release past it.
@@ -686,20 +714,14 @@ struct MessageRow: View {
             HStack(alignment: .bottom, spacing: DS.Space.sm) {
                 if mine { Spacer(minLength: 56) }
                 bubbleWithReaction
-                    .background {
-                        // Flash: an accent wash behind the bubble, not a frame.
-                        if highlighted {
-                            RoundedRectangle(cornerRadius: DS.Radius.xl + 6)
-                                .fill(DS.Palette.lime.opacity(0.28))
-                                .padding(-6)
-                                .transition(.opacity)
-                                .allowsHitTesting(false)
-                        }
-                    }
                     .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { frameBox.rect = $0 }
                     .opacity(hidden ? 0 : 1)
                     .simultaneousGesture(
-                        LongPressGesture(minimumDuration: 0.3).onEnded { _ in onFocus(message, frameBox.rect) }
+                        LongPressGesture(minimumDuration: 0.3).onEnded { _ in
+                            // The release that follows is not a tap, whenever it comes.
+                            tapGuard.blockedUntil = Date().addingTimeInterval(4)
+                            onFocus(message, frameBox.rect)
+                        }
                     )
                     .accessibilityAction(named: "React") { onFocus(message, frameBox.rect) }
                 if !mine { Spacer(minLength: 56) }
@@ -756,6 +778,7 @@ struct MessageRow: View {
     /// cancels the reply.
     private func dragReply(_ x: CGFloat) {
         let crossedBefore = swipe >= replyThreshold
+        if abs(x) > 4 { tapGuard.blockedUntil = Date().addingTimeInterval(1) }
         // Rubber band past the threshold.
         swipe = x < replyThreshold ? x : replyThreshold + (x - replyThreshold) * 0.25
         if !crossedBefore && swipe >= replyThreshold { Haptics.select() }
@@ -940,18 +963,11 @@ struct MessageRow: View {
             // The card shows the session as it stands on the server (`SessionStore`), live; the
             // message's copy only until its row is read.
             let store = SessionStore.shared
-            let row = store.record(snapshot.id)
-            let s = row.flatMap(SessionProposal.init) ?? snapshot
-            SessionCard(session: s, mine: row.map(store.isMine) ?? mine, profileName: convo.profile.name, chatID: convo.id,
-                        busy: store.isBusy(s.id),
-                        onPick: { d in
-                            app.respondToSession(s.id, accept: true, pick: d)
-                            onSessionSafety(s, d)
-                        },
-                        onDecline: { app.respondToSession(s.id, accept: false) },
-                        onCounter: { onCounterSession(s) },
-                        onCancel: { app.cancelSession(s.id) },
-                        onSafety: { if let d = s.chosen { onSessionSafety(s, d) } })
+            let record = store.record(snapshot.id)
+            let s = record.flatMap(SessionProposal.init) ?? snapshot
+            SessionRefCard(session: s, mine: record.map(store.isMine) ?? mine, name: convo.profile.name) {
+                if Date() >= tapGuard.blockedUntil { onOpenSession(s.id) }
+            }
                 .onAppear { store.need(snapshot.id) }
 
         case let .icebreakerReply(quote, reply):

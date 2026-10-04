@@ -27,6 +27,12 @@ final class SessionStore {
     @ObservationIgnored private var requested: Set<UUID> = []
     /// The signed-in person (`proposer_id` tells whose invite a card is).
     @ObservationIgnored private(set) var me: UUID?
+    /// When each session was last opened as it stands: what the person has looked at. Kept per account.
+    private(set) var seenAt: [UUID: Date] = [:]
+    /// Nothing that happened before this phone first knew about "seen" counts as news.
+    @ObservationIgnored private var baseline: Date?
+    /// Invites whose "Meet safely" was shown when they arrived: once each, before the invite itself.
+    @ObservationIgnored private var safetyShown: Set<UUID> = []
 
     // MARK: Reading
 
@@ -43,11 +49,79 @@ final class SessionStore {
 
     func isMine(_ row: SessionRecord) -> Bool { row.proposerID == me }
 
+    /// The pending sessions of a chat still ahead, the one waiting on the person first: what the chat's
+    /// banner shows. A confirmed session is settled and has no banner.
+    func pending(inMatch matchID: UUID) -> [SessionRecord] {
+        ledger.visible.values
+            .filter { $0.matchID == matchID && $0.status == .pending && $0.isUpcoming(at: .now) }
+            .sorted { a, b in
+                let (mineA, mineB) = (isMine(a), isMine(b))
+                return mineA == mineB ? a.date < b.date : !mineA
+            }
+    }
+
+    // MARK: What needs the person
+
+    /// An answer is expected from the person, or the other person changed something not looked at yet
+    /// (confirmed, declined, cancelled). Countered ones are told by the new invite that replaces them.
+    func needsAttention(_ row: SessionRecord) -> Bool {
+        guard me != nil else { return false }
+        switch row.status {
+        case .pending: return !isMine(row) && row.isUpcoming(at: .now)
+        case .countered: return false
+        case .accepted, .declined, .cancelled:
+            guard let baseline, row.updatedAt > baseline else { return false }
+            return row.updatedAt > (seenAt[row.id] ?? .distantPast)
+        }
+    }
+
+    /// The count on the Sessions tab.
+    var attentionCount: Int { ledger.visible.values.filter(needsAttention).count }
+
+    /// Opened as it stands: no longer news.
+    func markSeen(_ id: UUID) {
+        let id = aliases[id] ?? id
+        guard let me, let row = record(id) else { return }
+        seenAt[id] = max(.now, row.updatedAt)
+        UserDefaults.standard.set(seenAt.reduce(into: [String: Double]()) { $0[$1.key.uuidString] = $1.value.timeIntervalSince1970 },
+                                  forKey: Self.seenKey(me))
+    }
+
+    private static func seenKey(_ me: UUID) -> String { "sessions.seen.\(me.uuidString)" }
+    private static func safetyKey(_ me: UUID) -> String { "sessions.safety.\(me.uuidString)" }
+
+    /// Whether "Meet safely" was already shown for this invite.
+    func hasShownSafety(_ id: UUID) -> Bool { safetyShown.contains(aliases[id] ?? id) }
+
+    func markSafetyShown(_ id: UUID) {
+        guard let me else { return }
+        safetyShown.insert(aliases[id] ?? id)
+        UserDefaults.standard.set(safetyShown.map(\.uuidString), forKey: Self.safetyKey(me))
+    }
+
+    private func loadSeen(for me: UUID) {
+        let defaults = UserDefaults.standard
+        if let raw = defaults.dictionary(forKey: Self.seenKey(me)) as? [String: Double] {
+            seenAt = raw.reduce(into: [:]) { rows, entry in
+                if let id = UUID(uuidString: entry.key) { rows[id] = Date(timeIntervalSince1970: entry.value) }
+            }
+        }
+        safetyShown = Set((defaults.stringArray(forKey: Self.safetyKey(me)) ?? []).compactMap(UUID.init(uuidString:)))
+        let baselineKey = "\(Self.seenKey(me)).baseline"
+        if let t = defaults.object(forKey: baselineKey) as? Double {
+            baseline = Date(timeIntervalSince1970: t)
+        } else {
+            baseline = .now
+            defaults.set(Date.now.timeIntervalSince1970, forKey: baselineKey)
+        }
+    }
+
     /// Everything read again: the upcoming list, then the other sessions this phone shows, by id.
     /// Only a successful read changes anything.
     func refresh() async {
         guard let me = await Backend.shared.userID else { return }
         self.me = me
+        if baseline == nil { loadSeen(for: me) }
         guard let rows = await read({ try await Backend.shared.rpc("upcoming_sessions", [:]) }) else { return }
         let returned = Set(rows.map(\.id))
         ledger.merge(rows)
@@ -169,6 +243,9 @@ final class SessionStore {
         aliases = [:]
         requested = []
         me = nil
+        seenAt = [:]
+        baseline = nil
+        safetyShown = []
     }
 
     // MARK: Helpers

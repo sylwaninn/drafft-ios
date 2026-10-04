@@ -50,6 +50,8 @@ struct CalendarButton: View {
     /// The conversation it belongs to.
     let chatID: String
     var compact = false
+    /// On a light page (the session's page), where the night styles don't read.
+    var onPage = false
 
     @Environment(AppModel.self) private var app
     @State private var showSheet = false
@@ -68,6 +70,11 @@ struct CalendarButton: View {
                         .background(.white.opacity(0.14), in: .circle)
                 }
                 .buttonStyle(PressScaleStyle())
+            } else if onPage {
+                Button { open() } label: {
+                    Label(added ? "In your calendar" : "Add to calendar", image: added ? "calendar-check" : "calendar-add")
+                }
+                .buttonStyle(.drafftPrimary)
             } else if added {
                 Button { open() } label: {
                     Label("In your calendar", image: "calendar-check")

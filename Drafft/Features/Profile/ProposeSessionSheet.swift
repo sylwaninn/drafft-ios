@@ -84,8 +84,6 @@ struct ProposeSessionSheet: View {
 
     /// What gets sent: the options in time order.
     private var outgoingOptions: [Date] { options.sorted() }
-    private var sessionDate: Date { outgoingOptions.first ?? .now }
-    private var isCounter: Bool { counterTo != nil }
 
     private func compose(_ index: Int?) {
         Haptics.select()
@@ -119,15 +117,12 @@ struct ProposeSessionSheet: View {
             FocusScrollView {
                 VStack(alignment: .leading, spacing: DS.Space.md) {
                     header
-                    if let counterTo {
-                        // Other times: the session stays as it is, only the times change.
-                        fixedSession(counterTo)
-                    } else {
+                    // Other times: the session stays as it is, only the times change.
+                    if counterTo == nil {
                         block("Sport", icon: "running") { sportPicker }
                         block("Pitch it", icon: "chat-round-quote", trailing: "Optional") { titlePicker }
                     }
                     block("When", icon: "calendar", trailing: "Up to \(maxOptions) times") { slotsEditor }
-                    block("Meet safely", icon: "shield-check") { SafetyTipRows() }
                 }
                 .padding(.horizontal, DS.Space.lg)
                 .padding(.top, DS.Space.sm)
@@ -142,6 +137,11 @@ struct ProposeSessionSheet: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Close", image: .icon("close")) { dismiss() }
                 }
+                // The pitch is one line: Return closes the keyboard, and so does this.
+                ToolbarItemGroup(placement: .keyboard) {
+                    Spacer()
+                    Button("Done") { focus = nil }
+                }
             }
             .animation(Motion.select, value: sport)
             .animation(Motion.snappy, value: options)
@@ -154,20 +154,31 @@ struct ProposeSessionSheet: View {
     // MARK: Sections
 
     private var header: some View {
-        HStack(spacing: DS.Space.md) {
-            Avatar(name: profile.portrait, size: 52, ring: true)
-            VStack(alignment: .leading, spacing: 2) {
+        VStack(alignment: .leading, spacing: DS.Space.md) {
+            HStack(spacing: DS.Space.md) {
+                Avatar(name: profile.portrait, size: 52, ring: true)
                 Text(counterTo == nil ? "Train with \(profile.name)" : "Suggest other times")
                     .font(.display(22, relativeTo: .title2))
-                    .foregroundStyle(DS.Palette.ink)
                     // Long names wrap to a second line instead of being cut.
                     .lineLimit(2)
                     .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .foregroundStyle(DS.Palette.ink)
                     .accessibilityAddTraits(.isHeader)
-                Text(counterTo == nil ? "Meet up and move together." : "Offer a few times that work for you.")
-                    .font(.subheadline)
-                    .foregroundStyle(DS.Palette.body)
             }
+            // Under the photo, so the sentence has the whole width of the block.
+            // Other times: the session they are for, in its own words, nothing about the times refused.
+            Group {
+                if let counterTo {
+                    Text(counterTo.displayTitle)
+                } else {
+                    Text("Meet up and move together.")
+                }
+            }
+            .font(.subheadline)
+            .foregroundStyle(DS.Palette.body)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         // Nothing floats on the sage ground: the header is a white block like the sections below.
         .padding(DS.Space.lg)
@@ -244,49 +255,6 @@ struct ProposeSessionSheet: View {
         .accessibilityAddTraits(on ? .isSelected : [])
     }
 
-    /// Read-only recap of the invite being answered: sport and pitch are theirs, only times change.
-    private func fixedSession(_ original: SessionProposal) -> some View {
-        VStack(alignment: .leading, spacing: DS.Space.md) {
-            // The sport as a small lime tag; the pitch gets the full width below it.
-            HStack(spacing: 6) {
-                Image(original.sport.symbol)
-                    .font(.footnote.weight(.bold))
-                Text(original.discovery == nil ? original.sport.name : L("\(original.sport.name) discovery"))
-                    .font(.footnote.weight(.bold))
-            }
-            .foregroundStyle(DS.Palette.onAccentOnNight)
-            .padding(.horizontal, DS.Space.md)
-            .frame(minHeight: 30)
-            .background(DS.Palette.accentOnNight, in: .capsule)
-
-            Text(original.displayTitle)
-                .font(.displayBold(26, relativeTo: .title2))
-                .foregroundStyle(.white)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("They offered")
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(.white.opacity(0.55))
-                ForEach(original.options, id: \.self) { d in
-                    Text(slotText(d))
-                        .font(.subheadline.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.white.opacity(0.55))
-                        .strikethrough(color: .white.opacity(0.4))
-                }
-            }
-        }
-        .padding(DS.Space.xl)
-        .frame(maxWidth: .infinity, alignment: .leading).nightSurface()
-        // A sheet: plain night.
-        .background(DS.Palette.night, in: .rect(cornerRadius: DS.Radius.xl))
-        .overlay {
-            RoundedRectangle(cornerRadius: DS.Radius.xl)
-                .strokeBorder(DS.Palette.blockEdge, lineWidth: 1)
-        }
-    }
-
     private func slotText(_ d: Date) -> String {
         L("\(d.formatted(.dateTime.weekday(.wide).day().month(.abbreviated).locale(.app))) at \(d.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(.app)))")
     }
@@ -358,10 +326,16 @@ struct ProposeSessionSheet: View {
             VStack(spacing: DS.Space.xs) {
                 Image("add")
                     .font(.title3.weight(.bold))
-                Text(options.isEmpty ? "Add a time" : "Add another")
-                    .font(.caption.weight(.semibold))
+                // One line, never wrapped: the full words when they fit inside the dashed frame, else "Add".
+                ViewThatFits(in: .horizontal) {
+                    Text(options.isEmpty ? "Add a time" : "Add another")
+                    Text("Add")
+                }
+                .font(.caption.weight(.semibold))
+                .lineLimit(1)
             }
             .foregroundStyle(DS.Palette.accentInk)
+            .padding(.horizontal, DS.Space.md)
             .frame(maxWidth: .infinity, minHeight: 112)
             .overlay {
                 RoundedRectangle(cornerRadius: DS.Radius.lg)
@@ -372,38 +346,9 @@ struct ProposeSessionSheet: View {
         .buttonStyle(PressScaleStyle(scale: 0.96))
     }
 
-    /// Recap of exactly what will be sent, then the action.
+    /// The action, and why it can't run yet.
     private var footer: some View {
         VStack(spacing: DS.Space.md) {
-            HStack(spacing: DS.Space.sm) {
-                Image(sport.symbol)
-                    .font(.system(size: 15, weight: .bold))
-                    .foregroundStyle(DS.Palette.onLime)
-                    .frame(width: 40, height: 40)
-                    .background(DS.Palette.lime, in: .circle)
-                    .contentTransition(.symbolEffect(.replace))
-                VStack(alignment: .leading, spacing: 1) {
-                    let what = discovery == nil ? sport.name : L("\(sport.name) discovery")
-                    let day = sessionDate.formatted(.dateTime.weekday(.abbreviated).day().month(.abbreviated).locale(.app))
-                    let time = sessionDate.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(.app))
-                    Text(options.isEmpty ? L("\(what), no time yet") : outgoingOptions.count > 1
-                         ? L("\(what), \(outgoingOptions.count) time options")
-                         : L("\(what), \(day) at \(time)"))
-                        .font(.subheadline.weight(.bold))
-                        .foregroundStyle(DS.Palette.ink)
-                        .rollingDigits(wording: options.isEmpty ? "none" : outgoingOptions.count > 1 ? "many" : "\(what)\(day)".wording)
-                    Text(title.isEmpty ? (isCounter ? L("Same session, new times") : L("No pitch yet")) : title)
-                        .font(.footnote)
-                        .foregroundStyle(DS.Palette.body)
-                        .lineLimit(1)
-                        .contentTransition(.opacity)
-                }
-                Spacer(minLength: 0)
-            }
-            .animation(Motion.snappy, value: sessionDate)
-            .animation(Motion.snappy, value: options)
-            .accessibilityElement(children: .combine)
-
             Button(action: send) {
                 if sending {
                     Label("Sent", image: "check")
@@ -488,6 +433,12 @@ extension ProposeSessionSheet {
                     .lineLimit(1...3)
                     .font(.body.weight(.semibold))
                     .focused($focus, equals: .title)
+                    // One line of pitch: Return puts the keyboard away instead of breaking the line.
+                    .onChange(of: title) { _, new in
+                        guard new.contains("\n") else { return }
+                        title = new.replacing("\n", with: "")
+                        focus = nil
+                    }
                     .revealsOnFocus(focus == .title)
                     .submitLabel(.done)
                     .accessibilityLabel("Pitch")
