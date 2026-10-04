@@ -136,7 +136,7 @@ swiped); a `*_failed` or `*_refused` event follows when it didn't work (`swipe_r
 Screens (`Screen`, PostHog `$screen`): the tabs, sign-up and the welcome screen (set by `RootView` from
 the phase and the tab; it stays on Discover while the tabs are built invisibly under the splash), the
 gates (location, terms, hold), and every pushed screen and sheet that matters (`profile_detail`,
-`chat`, `paywall`, `extras`, `edit_profile`...). `.trackScreen(.x)` on a
+`chat`, `session`, `paywall`, `extras`, `edit_profile`...). `.trackScreen(.x)` on a
 view counts it while it's on screen (not while the tabs are hidden); `.trackPaywall(kind)` also sends
 `paywall_viewed` (with `from_screen`) and `paywall_dismissed` (with `purchased`).
 
