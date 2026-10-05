@@ -312,6 +312,7 @@ struct MainTabs: View {
             } label: {
                 tabLabel(L("Sessions"), "stopwatch-play", .sessions)
             }
+            .badge(SessionStore.shared.attentionCount)
             Tab(value: AppModel.Tab.chats) {
                 ConversationsView().tint(DS.Palette.accentInk)
             } label: {

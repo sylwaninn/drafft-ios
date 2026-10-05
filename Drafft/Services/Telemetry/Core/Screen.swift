@@ -29,6 +29,7 @@ enum Screen: String, Sendable, CaseIterable, TelemetryValueConvertible {
     case chat
     case mediaViewer = "media_viewer"
     case proposeSession = "propose_session"
+    case session
     case filters
     case superLikeComposer = "super_like_composer"
     case extras

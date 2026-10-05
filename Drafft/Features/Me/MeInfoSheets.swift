@@ -279,51 +279,40 @@ struct SafetyTipsSheet: View {
     }
 }
 
-/// Shown right after you confirm a session time: the plan in one line, then the safety tips.
+/// "Meet safely", slid in when a request has left (a session was proposed) and when one arrives, before
+/// the invite itself: the tips come first, then the person decides.
 struct SessionSafetySheet: View {
-    let session: SessionProposal
-    let date: Date
-    let partner: String
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(spacing: DS.Space.md) {
-                    VStack(alignment: .leading, spacing: DS.Space.sm) {
-                        Label("Session confirmed", image: "check-circle")
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(DS.Palette.accentOnNight)
-                        Text("\(session.sport.name) with \(partner)")
-                            .font(.display(28, relativeTo: .title))
-                            .displayLeading(28)
-                            .foregroundStyle(.white)
+                VStack(alignment: .leading, spacing: DS.Space.xl) {
+                    VStack(alignment: .leading, spacing: DS.Space.lg) {
+                        Image("shield-check")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundStyle(DS.Palette.onLime)
+                            .frame(width: 56, height: 56)
+                            .background(DS.Palette.lime, in: .circle)
+                            .accessibilityHidden(true)
+                        Text("Meet safely")
+                            .font(.display(34, relativeTo: .largeTitle))
+                            .displayLeading(34)
+                            .foregroundStyle(DS.Palette.ink)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text("\(date.formatted(.dateTime.weekday(.wide).day().month(.wide).locale(.app))) at \(date.formatted(Date.FormatStyle(date: .omitted, time: .shortened).locale(.app)))")
-                            .font(.headline)
-                            .foregroundStyle(.white.opacity(0.8))
+                            .accessibilityAddTraits(.isHeader)
                     }
-                    .padding(DS.Space.xl)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(DS.Palette.night, in: .rect(cornerRadius: DS.Radius.xl))
-                    .nightSurface()
-                    .overlay {
-                        RoundedRectangle(cornerRadius: DS.Radius.xl)
-                            .strokeBorder(DS.Palette.blockEdge, lineWidth: 1)
-                            .allowsHitTesting(false)
-                    }
-                    .accessibilityElement(children: .combine)
+                    .padding(.horizontal, DS.Space.xs)
 
                     SheetBlock(title: L("Before you go")) {
                         SafetyTipRows()
                     }
                 }
                 .padding(.horizontal, DS.Space.lg)
-                .padding(.top, DS.Space.sm)
+                .padding(.top, DS.Space.lg)
                 .padding(.bottom, DS.Space.xl)
             }
             .background(DS.Palette.canvasSoft)
-            .navigationTitle("Meet safely")
             .navigationBarTitleDisplayMode(.inline)
             // No close button: "Got it" is the one way out (and the swipe down), never both.
             .blurredNavigationEdge()
